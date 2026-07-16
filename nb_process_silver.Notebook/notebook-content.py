@@ -28,7 +28,7 @@
 # Welcome to your new notebook
 # Type here in the cell editor to add code!
 
-# --- TICKET DE-101: SALES KPI ROLLUP UPDATE COMPLETED --- 
+# --- TICKET DE-101: SALES KPI ROLLUP UPDATE COMPLETED ---
 
 from pyspark.sql.functions import current_timestamp, lit, col, to_timestamp
 
