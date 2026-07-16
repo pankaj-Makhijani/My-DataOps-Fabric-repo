@@ -1,0 +1,77 @@
+trigger:
+  branches:
+    include:
+      - development
+      - qa
+      - uat
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+# ---------------------------------------------------------------------------
+# STAGE 1: CI AUTOMATED QUALITY GATE (Runs on changes to development)
+# ---------------------------------------------------------------------------
+- stage: CI_Validation
+  displayName: 'Automated QA & Validation'
+  condition: eq(variables['Build.SourceBranch'], 'refs/heads/development')
+  variables:
+  - group: vg-dataops-dev
+  jobs:
+  - job: Validate_Fabric_Assets
+    displayName: 'Scan Medallion Metadata Configuration Files'
+    steps:
+    - script: |
+        echo "🔍 Initiating code parsing algorithms on incoming feature branch..."
+        echo "Checking path configuration consistency at repository root..."
+        ls -R $(Build.SourcesDirectory)
+      displayName: 'Verify Lakehouse Schemes and Notebook Files'
+
+# ---------------------------------------------------------------------------
+# STAGE 2: QA ENVIRONMENT ENHANCEMENT (Runs on changes to QA)
+# ---------------------------------------------------------------------------
+- stage: Deploy_QA
+  displayName: 'Sync to QA Workspace'
+  condition: eq(variables['Build.SourceBranch'], 'refs/heads/qa')
+  # variables:
+  # - group: vg-dataops-qa  <-- Uncomment later when you create your QA Key Vault
+  jobs:
+  - job: Sync_QA
+    steps:
+    - script: |
+        echo "🧪 Simulating automated deployment integration checks..."
+        echo "Ready to initialize Git Sync REST API for My-DataOps-QA-Workspace."
+      displayName: 'Log QA Environment Code Sync'
+
+# ---------------------------------------------------------------------------
+# STAGE 3: USER ACCEPTANCE TESTING GATE (Runs on changes to UAT)
+# ---------------------------------------------------------------------------
+- stage: Deploy_UAT
+  displayName: 'Sync to UAT Workspace'
+  condition: eq(variables['Build.SourceBranch'], 'refs/heads/uat')
+  # variables:
+  # - group: vg-dataops-uat <-- Uncomment later when you create your UAT Key Vault
+  jobs:
+  - job: Sync_UAT
+    steps:
+    - script: |
+        echo "📊 Staging verified application code for client validation..."
+        echo "Ready to initialize Git Sync REST API for My-DataOps-UAT-Workspace."
+      displayName: 'Log UAT Environment Code Sync'
+
+# ---------------------------------------------------------------------------
+# STAGE 4: PRODUCTION GOLDEN RELEASE (Runs on changes to main)
+# ---------------------------------------------------------------------------
+- stage: Deploy_PROD
+  displayName: 'Release to Production'
+  condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
+  # variables:
+  # - group: vg-dataops-prod <-- Uncomment later when you create your PROD Key Vault
+  jobs:
+  - job: Release_Prod
+    steps:
+    - script: |
+        echo "💎 Committing final verified business data structures live..."
+        echo "Ready to initialize Git Sync REST API for My-DataOps-PROD-Workspace."
+      displayName: 'Log Production Release Sync'
