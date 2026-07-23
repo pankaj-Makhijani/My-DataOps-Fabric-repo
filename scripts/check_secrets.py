@@ -17,6 +17,9 @@ from pathlib import Path
 
 SCAN_SUFFIXES = {".py", ".ipynb", ".json", ".yml", ".yaml", ".sql", ".cfg", ".ini"}
 
+# directories that are tooling rather than Fabric items
+EXCLUDE_DIRS = {"scripts", ".git", ".azure-pipelines", ".github"}
+
 SECRET_NAME = r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|conn(?:ection)?[_-]?string|sas[_-]?token)"
 
 PATTERNS = [
@@ -73,7 +76,7 @@ def collect(paths):
                 f for f in p.rglob("*")
                 if f.is_file()
                 and f.suffix.lower() in SCAN_SUFFIXES
-                and ".git" not in f.parts
+                and not EXCLUDE_DIRS.intersection(f.parts)
             )
         elif p.is_file() and p.suffix.lower() in SCAN_SUFFIXES:
             out.append(p)
