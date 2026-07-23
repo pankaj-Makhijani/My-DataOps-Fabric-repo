@@ -31,6 +31,9 @@ WORKSPACE_NAME = re.compile(
 
 NOTEBOOK_SUFFIXES = {".py", ".ipynb"}
 
+# directories that are tooling rather than Fabric items
+EXCLUDE_DIRS = {"scripts", ".git", ".azure-pipelines", ".github"}
+
 # Paths that are relative to the attached lakehouse are fine.
 SAFE_HINTS = ("/lakehouse/default/", "Files/", "Tables/")
 
@@ -73,7 +76,12 @@ def collect(paths):
     for raw in paths:
         p = Path(raw)
         if p.is_dir():
-            out.extend(f for f in p.rglob("*") if f.is_file() and is_notebook(f))
+            out.extend(
+                f for f in p.rglob("*")
+                if f.is_file()
+                and is_notebook(f)
+                and not EXCLUDE_DIRS.intersection(f.parts)
+            )
         elif p.is_file() and is_notebook(p):
             out.append(p)
     return sorted(set(out))
