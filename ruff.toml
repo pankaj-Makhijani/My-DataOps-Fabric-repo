@@ -1,0 +1,29 @@
+# Ruff configuration for Fabric notebook source.
+#
+# Fabric injects Spark and utility objects into the notebook runtime, so they
+# are not defined in the file itself. Without declaring them here, every
+# notebook that uses Spark reports F821 undefined name.
+
+line-length = 120
+
+builtins = [
+    "spark",
+    "sc",
+    "sqlContext",
+    "dbutils",
+    "mssparkutils",
+    "notebookutils",
+    "display",
+    "displayHTML",
+    "getArgument",
+]
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line length, notebooks often carry long paths and SQL
+    "E402",  # imports not at top of file, common in notebooks
+]
+
+[lint.per-file-ignores]
+"*.Notebook/notebook-content.py" = ["F401"]  # unused imports are common in notebooks
