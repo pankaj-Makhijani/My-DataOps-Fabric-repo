@@ -30,6 +30,7 @@
 
 from pyspark.sql.functions import current_timestamp, lit, col, to_timestamp
 
+
 # 1. Read the raw transaction file from the Bronze lakehouse landing zone
 # We target the absolute OneLake path since Silver is our default context here
 raw_df = spark.read.format("csv") \
