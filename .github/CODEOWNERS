@@ -1,1 +1,11 @@
+# Development
+fabric/dev/ @pankaj-Makhijani
 
+# QA
+fabric/qa/ @pankaj-Makhijani
+
+# UAT
+fabric/uat/ @pankaj-Makhijani
+
+# Production
+fabric/production/ @pankaj-Makhijani
