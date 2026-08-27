@@ -5,8 +5,9 @@ on:
     branches:
       - main
     paths:
-      - "data/fabric/dev/**"
+      - "fabric/dev/**"
 
+  # Keep manual execution available for troubleshooting/testing.
   workflow_dispatch:
 
 permissions:
@@ -18,10 +19,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ------------------------------------------------------------
+      # 1. Authenticate to Microsoft Fabric using the Service Principal
+      # ------------------------------------------------------------
       - name: Get Fabric access token
         id: token
         shell: bash
         run: |
+          set -euo pipefail
+
           RESPONSE=$(curl -sS -X POST \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "client_id=${{ secrets.FABRIC_CLIENT_ID }}" \
@@ -34,19 +40,24 @@ jobs:
 
           if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
             echo "Failed to obtain Fabric access token."
-            echo "$RESPONSE"
+            echo "$RESPONSE" | jq .
             exit 1
           fi
 
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      # ------------------------------------------------------------
+      # 2. Get current Git synchronization status from DEV workspace
+      # ------------------------------------------------------------
       - name: Get DEV Git status
         id: git-status
         env:
           FABRIC_TOKEN: ${{ steps.token.outputs.token }}
         shell: bash
         run: |
+          set -euo pipefail
+
           RESPONSE=$(curl -sS \
             -H "Authorization: Bearer $FABRIC_TOKEN" \
             -H "Content-Type: application/json" \
@@ -56,11 +67,11 @@ jobs:
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | sed '$d')
 
-          echo "HTTP status: $HTTP_STATUS"
+          echo "Git status HTTP status: $HTTP_STATUS"
           echo "$BODY" | jq .
 
           if [ "$HTTP_STATUS" -ge 400 ]; then
-            echo "Failed to get DEV Git status."
+            echo "Failed to get DEV workspace Git status."
             exit 1
           fi
 
@@ -72,27 +83,39 @@ jobs:
             exit 1
           fi
 
+          if [ "$WORKSPACE_HEAD" = "null" ]; then
+            WORKSPACE_HEAD=""
+          fi
+
           echo "Workspace head: $WORKSPACE_HEAD"
           echo "Remote commit: $REMOTE_COMMIT_HASH"
 
           echo "workspace_head=$WORKSPACE_HEAD" >> "$GITHUB_OUTPUT"
           echo "remote_commit_hash=$REMOTE_COMMIT_HASH" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether DEV workspace is already synchronized
+      # ------------------------------------------------------------
+      # 3. Check whether DEV is already synchronized
+      # ------------------------------------------------------------
+      - name: Check synchronization status
         id: sync-check
         env:
           WORKSPACE_HEAD: ${{ steps.git-status.outputs.workspace_head }}
           REMOTE_COMMIT_HASH: ${{ steps.git-status.outputs.remote_commit_hash }}
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ "$WORKSPACE_HEAD" = "$REMOTE_COMMIT_HASH" ]; then
             echo "DEV workspace is already synchronized with Git."
             echo "needs_update=false" >> "$GITHUB_OUTPUT"
           else
-            echo "DEV workspace is behind Git."
+            echo "DEV workspace is behind the remote Git branch."
             echo "needs_update=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # ------------------------------------------------------------
+      # 4. Update DEV workspace from Git
+      # ------------------------------------------------------------
       - name: Update DEV workspace from Git
         if: steps.sync-check.outputs.needs_update == 'true'
         id: update
@@ -102,6 +125,8 @@ jobs:
           REMOTE_COMMIT_HASH: ${{ steps.git-status.outputs.remote_commit_hash }}
         shell: bash
         run: |
+          set -euo pipefail
+
           BODY=$(jq -n \
             --arg workspaceHead "$WORKSPACE_HEAD" \
             --arg remoteCommitHash "$REMOTE_COMMIT_HASH" \
@@ -115,7 +140,7 @@ jobs:
 
           echo "Starting Update From Git..."
 
-          curl -sS \
+          HTTP_STATUS=$(curl -sS \
             -D response_headers.txt \
             -o response_body.json \
             -w "%{http_code}" \
@@ -123,25 +148,28 @@ jobs:
             -H "Authorization: Bearer $FABRIC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$BODY" \
-            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/updateFromGit" \
-            > http_status.txt
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/updateFromGit")
 
-          HTTP_STATUS=$(cat http_status.txt)
-
-          echo "HTTP status: $HTTP_STATUS"
+          echo "Update From Git HTTP status: $HTTP_STATUS"
 
           if [ -s response_body.json ]; then
+            echo "Response:"
             cat response_body.json | jq .
           fi
 
+          # -----------------------------------------
+          # Synchronous completion
+          # -----------------------------------------
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "DEV workspace updated successfully."
             exit 0
           fi
 
+          # -----------------------------------------
+          # Long-running operation
+          # -----------------------------------------
           if [ "$HTTP_STATUS" != "202" ]; then
             echo "Update From Git failed."
-            cat response_body.json
             exit 1
           fi
 
@@ -163,10 +191,14 @@ jobs:
             RETRY_AFTER=30
           fi
 
-          echo "Operation ID: $OPERATION_ID"
-          echo "Retry after: $RETRY_AFTER seconds"
+          echo "Fabric operation ID: $OPERATION_ID"
+          echo "Initial retry interval: $RETRY_AFTER seconds"
 
+          # -----------------------------------------
+          # Poll Fabric long-running operation
+          # -----------------------------------------
           for ATTEMPT in {1..20}; do
+
             sleep "$RETRY_AFTER"
 
             STATUS_RESPONSE=$(curl -sS \
@@ -179,21 +211,33 @@ jobs:
             echo "Attempt $ATTEMPT: $STATUS"
 
             if [ "$STATUS" = "Succeeded" ]; then
-              echo "DEV workspace update completed successfully."
+              echo "DEV workspace Update From Git completed successfully."
               exit 0
             fi
 
             if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
-              echo "Fabric Update From Git operation failed."
+              echo "DEV workspace Update From Git failed."
               echo "$STATUS_RESPONSE" | jq .
               exit 1
             fi
+
+            # Continue polling while NotStarted/Running.
+            RETRY_AFTER=$(echo "$STATUS_RESPONSE" | jq -r '.retryAfter // empty')
+
+            if [ -z "$RETRY_AFTER" ]; then
+              RETRY_AFTER=30
+            fi
+
           done
 
-          echo "Update From Git did not complete within the expected time."
+          echo "Update From Git did not complete within the allowed polling period."
           exit 1
 
+      # ------------------------------------------------------------
+      # 5. No update required
+      # ------------------------------------------------------------
       - name: DEV workspace already synchronized
         if: steps.sync-check.outputs.needs_update == 'false'
         run: |
-          echo "No Fabric update required."
+          echo "DEV workspace is already synchronized with Git."
+          echo "No Update From Git operation was required."
