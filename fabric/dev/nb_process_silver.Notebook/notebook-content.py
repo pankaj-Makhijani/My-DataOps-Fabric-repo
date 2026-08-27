@@ -28,8 +28,6 @@
 # Welcome to your new notebook
 # Type here in the cell editor to add code!
 
-
-
 from pyspark.sql.functions import current_timestamp, lit, col, to_timestamp
 
 # 1. Read the raw transaction file from the Bronze lakehouse landing zone
