@@ -1,0 +1,138 @@
+name: Configure Fabric Git Credentials
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    name: Configure DEV Git Credentials
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get Fabric access token
+        id: token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl -sS -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "client_id=${{ secrets.FABRIC_CLIENT_ID }}" \
+            --data-urlencode "client_secret=${{ secrets.FABRIC_CLIENT_SECRET }}" \
+            --data-urlencode "scope=https://api.fabric.microsoft.com/.default" \
+            --data-urlencode "grant_type=client_credentials" \
+            "https://login.microsoftonline.com/${{ secrets.FABRIC_TENANT_ID }}/oauth2/v2.0/token")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Failed to obtain Fabric access token."
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Find GitHub connection
+        id: connection
+        env:
+          FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl -sS \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.fabric.microsoft.com/v1/connections")
+
+          echo "Connections visible to Service Principal:"
+          echo "$RESPONSE" | jq .
+
+          CONNECTION_ID=$(echo "$RESPONSE" | jq -r \
+            '.value[]
+             | select(.displayName == "My-DataOps-Fabric-Repo")
+             | .id' \
+            | head -n 1)
+
+          if [ -z "$CONNECTION_ID" ] || [ "$CONNECTION_ID" = "null" ]; then
+            echo "My-DataOps-Fabric-Repo was not found."
+            echo "Make sure the Service Principal has access to the connection."
+            exit 1
+          fi
+
+          echo "Connection found."
+          echo "connection_id=$CONNECTION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Service Principal Git credentials
+        env:
+          FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+          CONNECTION_ID: ${{ steps.connection.outputs.connection_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HTTP_STATUS=$(curl -sS \
+            -o response.json \
+            -w "%{http_code}" \
+            -X PATCH \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"source\": \"ConfiguredConnection\",
+              \"connectionId\": \"$CONNECTION_ID\"
+            }" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/myGitCredentials")
+
+          echo "HTTP status: $HTTP_STATUS"
+
+          if [ -s response.json ]; then
+            cat response.json | jq .
+          fi
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Failed to configure Service Principal Git credentials."
+            exit 1
+          fi
+
+          SOURCE=$(jq -r '.source' response.json)
+          RETURNED_CONNECTION_ID=$(jq -r '.connectionId' response.json)
+
+          if [ "$SOURCE" != "ConfiguredConnection" ]; then
+            echo "Unexpected Git credential source: $SOURCE"
+            exit 1
+          fi
+
+          if [ "$RETURNED_CONNECTION_ID" != "$CONNECTION_ID" ]; then
+            echo "Returned connection ID does not match."
+            exit 1
+          fi
+
+          echo "Service Principal Git credentials configured successfully."
+
+      - name: Verify Git credentials
+        env:
+          FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl -sS \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/myGitCredentials")
+
+          echo "$RESPONSE" | jq .
+
+          SOURCE=$(echo "$RESPONSE" | jq -r '.source')
+
+          if [ "$SOURCE" != "ConfiguredConnection" ]; then
+            echo "Git credentials are not configured correctly."
+            exit 1
+          fi
+
+          echo "Verified: Service Principal is using ConfiguredConnection."
