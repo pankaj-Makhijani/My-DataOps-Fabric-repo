@@ -1,6 +1,12 @@
 name: Fabric Workspace Update
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "data/fabric/dev/**"
+
   workflow_dispatch:
 
 permissions:
@@ -35,11 +41,159 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Get DEV workspace Git status
+      - name: Get DEV Git status
+        id: git-status
         env:
           FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+        shell: bash
         run: |
-          curl -sS \
+          RESPONSE=$(curl -sS \
             -H "Authorization: Bearer $FABRIC_TOKEN" \
             -H "Content-Type: application/json" \
-            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/status"
+            -w "\n%{http_code}" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/status")
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "$BODY" | jq .
+
+          if [ "$HTTP_STATUS" -ge 400 ]; then
+            echo "Failed to get DEV Git status."
+            exit 1
+          fi
+
+          WORKSPACE_HEAD=$(echo "$BODY" | jq -r '.workspaceHead')
+          REMOTE_COMMIT_HASH=$(echo "$BODY" | jq -r '.remoteCommitHash')
+
+          if [ -z "$REMOTE_COMMIT_HASH" ] || [ "$REMOTE_COMMIT_HASH" = "null" ]; then
+            echo "Could not determine remoteCommitHash."
+            exit 1
+          fi
+
+          echo "Workspace head: $WORKSPACE_HEAD"
+          echo "Remote commit: $REMOTE_COMMIT_HASH"
+
+          echo "workspace_head=$WORKSPACE_HEAD" >> "$GITHUB_OUTPUT"
+          echo "remote_commit_hash=$REMOTE_COMMIT_HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether DEV workspace is already synchronized
+        id: sync-check
+        env:
+          WORKSPACE_HEAD: ${{ steps.git-status.outputs.workspace_head }}
+          REMOTE_COMMIT_HASH: ${{ steps.git-status.outputs.remote_commit_hash }}
+        shell: bash
+        run: |
+          if [ "$WORKSPACE_HEAD" = "$REMOTE_COMMIT_HASH" ]; then
+            echo "DEV workspace is already synchronized with Git."
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "DEV workspace is behind Git."
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update DEV workspace from Git
+        if: steps.sync-check.outputs.needs_update == 'true'
+        id: update
+        env:
+          FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+          WORKSPACE_HEAD: ${{ steps.git-status.outputs.workspace_head }}
+          REMOTE_COMMIT_HASH: ${{ steps.git-status.outputs.remote_commit_hash }}
+        shell: bash
+        run: |
+          BODY=$(jq -n \
+            --arg workspaceHead "$WORKSPACE_HEAD" \
+            --arg remoteCommitHash "$REMOTE_COMMIT_HASH" \
+            '{
+              workspaceHead: $workspaceHead,
+              remoteCommitHash: $remoteCommitHash,
+              options: {
+                allowOverrideItems: true
+              }
+            }')
+
+          echo "Starting Update From Git..."
+
+          curl -sS \
+            -D response_headers.txt \
+            -o response_body.json \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/updateFromGit" \
+            > http_status.txt
+
+          HTTP_STATUS=$(cat http_status.txt)
+
+          echo "HTTP status: $HTTP_STATUS"
+
+          if [ -s response_body.json ]; then
+            cat response_body.json | jq .
+          fi
+
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "DEV workspace updated successfully."
+            exit 0
+          fi
+
+          if [ "$HTTP_STATUS" != "202" ]; then
+            echo "Update From Git failed."
+            cat response_body.json
+            exit 1
+          fi
+
+          OPERATION_ID=$(grep -i '^x-ms-operation-id:' response_headers.txt \
+            | cut -d' ' -f2 \
+            | tr -d '\r')
+
+          if [ -z "$OPERATION_ID" ]; then
+            echo "Could not find Fabric operation ID."
+            cat response_headers.txt
+            exit 1
+          fi
+
+          RETRY_AFTER=$(grep -i '^retry-after:' response_headers.txt \
+            | cut -d' ' -f2 \
+            | tr -d '\r')
+
+          if [ -z "$RETRY_AFTER" ]; then
+            RETRY_AFTER=30
+          fi
+
+          echo "Operation ID: $OPERATION_ID"
+          echo "Retry after: $RETRY_AFTER seconds"
+
+          for ATTEMPT in {1..20}; do
+            sleep "$RETRY_AFTER"
+
+            STATUS_RESPONSE=$(curl -sS \
+              -H "Authorization: Bearer $FABRIC_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.fabric.microsoft.com/v1/operations/$OPERATION_ID")
+
+            STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+
+            echo "Attempt $ATTEMPT: $STATUS"
+
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "DEV workspace update completed successfully."
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "Fabric Update From Git operation failed."
+              echo "$STATUS_RESPONSE" | jq .
+              exit 1
+            fi
+          done
+
+          echo "Update From Git did not complete within the expected time."
+          exit 1
+
+      - name: DEV workspace already synchronized
+        if: steps.sync-check.outputs.needs_update == 'false'
+        run: |
+          echo "No Fabric update required."
