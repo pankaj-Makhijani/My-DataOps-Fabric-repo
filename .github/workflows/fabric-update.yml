@@ -1,0 +1,45 @@
+name: Fabric Workspace Update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-dev:
+    name: Update DEV Workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get Fabric access token
+        id: token
+        shell: bash
+        run: |
+          RESPONSE=$(curl -sS -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "client_id=${{ secrets.FABRIC_CLIENT_ID }}" \
+            --data-urlencode "client_secret=${{ secrets.FABRIC_CLIENT_SECRET }}" \
+            --data-urlencode "scope=https://api.fabric.microsoft.com/.default" \
+            --data-urlencode "grant_type=client_credentials" \
+            "https://login.microsoftonline.com/${{ secrets.FABRIC_TENANT_ID }}/oauth2/v2.0/token")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Failed to obtain Fabric access token."
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Get DEV workspace Git status
+        env:
+          FABRIC_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          curl -sS \
+            -H "Authorization: Bearer $FABRIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.fabric.microsoft.com/v1/workspaces/${{ secrets.FABRIC_DEV_WORKSPACE_ID }}/git/status"
